@@ -1,0 +1,15 @@
+{
+	"required": true,
+	"package": "com.spotifyoverlay.mixin",
+	"compatibilityLevel": "JAVA_25",
+	"client": [
+		"ChatScreenMixin",
+		"ContainerEventHandlerMixin"
+	],
+	"injectors": {
+		"defaultRequire": 1
+	},
+	"overwrites": {
+		"requireAnnotations": true
+	}
+}

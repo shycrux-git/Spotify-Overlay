@@ -1,0 +1,94 @@
+import org.jetbrains.kotlin.gradle.dsl.JvmTarget
+
+plugins {
+	id 'net.fabricmc.fabric-loom' version "${loom_version}"
+	id 'maven-publish'
+	id "org.jetbrains.kotlin.jvm" version "2.4.0"
+	id "org.jetbrains.kotlin.plugin.serialization" version "2.4.0"
+}
+
+version = project.mod_version
+group = project.maven_group
+
+repositories {
+	mavenCentral()
+}
+
+def lwjglVersion = "3.4.1"
+def lwjglNatives = [
+	"natives-windows",
+	"natives-windows-arm64",
+	"natives-linux",
+	"natives-linux-arm64",
+	"natives-macos",
+	"natives-macos-arm64"
+]
+
+dependencies {
+	minecraft "com.mojang:minecraft:${project.minecraft_version}"
+	implementation "net.fabricmc:fabric-loader:${project.loader_version}"
+
+	implementation "net.fabricmc.fabric-api:fabric-api:${project.fabric_api_version}"
+	implementation "net.fabricmc:fabric-language-kotlin:${project.fabric_kotlin_version}"
+
+	implementation "org.jetbrains.kotlinx:kotlinx-serialization-json:1.9.0"
+	include "org.jetbrains.kotlinx:kotlinx-serialization-json:1.9.0"
+
+	implementation "org.lwjgl:lwjgl-nanovg:${lwjglVersion}"
+	include "org.lwjgl:lwjgl-nanovg:${lwjglVersion}"
+
+	lwjglNatives.each { classifier ->
+		runtimeOnly "org.lwjgl:lwjgl-nanovg:${lwjglVersion}:${classifier}"
+		include "org.lwjgl:lwjgl-nanovg:${lwjglVersion}:${classifier}"
+	}
+}
+
+processResources {
+	def version = project.version
+	inputs.property "version", version
+
+	filesMatching("fabric.mod.json") {
+		expand "version": version
+	}
+}
+
+tasks.withType(JavaCompile).configureEach {
+	it.options.release = 25
+}
+
+kotlin {
+	compilerOptions {
+		jvmTarget = JvmTarget.JVM_25
+	}
+}
+
+java {
+	toolchain {
+		languageVersion = JavaLanguageVersion.of(25)
+	}
+
+	withSourcesJar()
+
+	sourceCompatibility = JavaVersion.VERSION_25
+	targetCompatibility = JavaVersion.VERSION_25
+}
+
+jar {
+	def projectName = project.name
+	inputs.property "projectName", projectName
+
+	from("LICENSE") {
+		rename { "${it}_$projectName"}
+	}
+}
+
+publishing {
+	publications {
+		create("mavenJava", MavenPublication) {
+			from components.java
+		}
+	}
+
+	repositories {
+	}
+}
