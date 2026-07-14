@@ -33,10 +33,9 @@ dependencies {
 	implementation "io.github.humbleui:skija-shared:${skijaVersion}"
 	include "io.github.humbleui:skija-shared:${skijaVersion}"
 
-	["windows-x64", "linux-x64", "macos-x64", "macos-arm64"].each { platform ->
-		runtimeOnly "io.github.humbleui:skija-${platform}:${skijaVersion}"
-		include "io.github.humbleui:skija-${platform}:${skijaVersion}"
-	}
+	// SMTC / Windows Media Session — Windows-only mod; ship only Windows Skija natives.
+	runtimeOnly "io.github.humbleui:skija-windows-x64:${skijaVersion}"
+	include "io.github.humbleui:skija-windows-x64:${skijaVersion}"
 }
 
 loom {
