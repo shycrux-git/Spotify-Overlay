@@ -14,15 +14,8 @@ repositories {
 	mavenCentral()
 }
 
-def lwjglVersion = "3.4.1"
-def lwjglNatives = [
-	"natives-windows",
-	"natives-windows-arm64",
-	"natives-linux",
-	"natives-linux-arm64",
-	"natives-macos",
-	"natives-macos-arm64"
-]
+def skijaVersion = "0.143.17"
+def humbleTypesVersion = "0.2.0"
 
 dependencies {
 	minecraft "com.mojang:minecraft:${project.minecraft_version}"
@@ -34,13 +27,20 @@ dependencies {
 	implementation "org.jetbrains.kotlinx:kotlinx-serialization-json:1.9.0"
 	include "org.jetbrains.kotlinx:kotlinx-serialization-json:1.9.0"
 
-	implementation "org.lwjgl:lwjgl-nanovg:${lwjglVersion}"
-	include "org.lwjgl:lwjgl-nanovg:${lwjglVersion}"
+	implementation "io.github.humbleui:types:${humbleTypesVersion}"
+	include "io.github.humbleui:types:${humbleTypesVersion}"
 
-	lwjglNatives.each { classifier ->
-		runtimeOnly "org.lwjgl:lwjgl-nanovg:${lwjglVersion}:${classifier}"
-		include "org.lwjgl:lwjgl-nanovg:${lwjglVersion}:${classifier}"
+	implementation "io.github.humbleui:skija-shared:${skijaVersion}"
+	include "io.github.humbleui:skija-shared:${skijaVersion}"
+
+	["windows-x64", "linux-x64", "macos-x64", "macos-arm64"].each { platform ->
+		runtimeOnly "io.github.humbleui:skija-${platform}:${skijaVersion}"
+		include "io.github.humbleui:skija-${platform}:${skijaVersion}"
 	}
+}
+
+loom {
+	accessWidenerPath = file("src/main/resources/spotify-overlay.accesswidener")
 }
 
 processResources {

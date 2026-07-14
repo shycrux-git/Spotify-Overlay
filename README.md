@@ -1,12 +1,13 @@
 # Spotify Overlay
 
-Fabric mod for Minecraft **26.2** — a NanoVG media HUD showing the currently playing Spotify track (cover, title, artist, progress, synced lyrics).
+Fabric mod for Minecraft **26.2** — a Skija media HUD showing the currently playing Spotify track (cover, title, artist, progress, synced lyrics).
 
 ## How it works
 
 - **Now playing:** Windows SMTC (Spotify desktop session)
 - **Lyrics:** Musixmatch, with LRCLIB fallback
 - **Artwork / multi-artist credits:** iTunes / Deezer lookup
+- **Rendering:** HumbleUI Skija over Minecraft’s picture-in-picture path — works with **OpenGL** and **Vulkan**
 
 No Spotify Client ID or browser cookies required.
 
@@ -15,7 +16,6 @@ No Spotify Client ID or browser cookies required.
 - Windows 10/11
 - Minecraft 26.2 + Fabric Loader `>=0.19.3`, Fabric API, Fabric Language Kotlin
 - Spotify desktop app with an active media session
-- Graphics set to **OpenGL** (NanoVG is OpenGL-only)
 
 ## Setup
 

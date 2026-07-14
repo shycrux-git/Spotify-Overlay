@@ -3,7 +3,7 @@ package com.spotifyoverlay.client
 import com.mojang.blaze3d.platform.InputConstants
 import com.spotifyoverlay.SpotifyOverlay
 import com.spotifyoverlay.config.ModConfig
-import com.spotifyoverlay.render.NvgPipRenderer
+import com.spotifyoverlay.render.SkijaPipRenderer
 import com.spotifyoverlay.render.OverlayRenderer
 import com.spotifyoverlay.spotify.SpotifyLyricsClient
 import com.spotifyoverlay.spotify.WindowsMediaSessionClient
@@ -27,7 +27,7 @@ object SpotifyOverlayClient : ClientModInitializer {
 		SpotifyLyricsClient.warmUp()
 		WindowsMediaSessionClient.start()
 
-		PictureInPictureRendererRegistry.register { NvgPipRenderer() }
+		PictureInPictureRendererRegistry.register { SkijaPipRenderer() }
 		HudElementRegistry.addLast(SpotifyOverlay.id("overlay")) { graphics, _ ->
 			OverlayRenderer.extract(graphics)
 		}

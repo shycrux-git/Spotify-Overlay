@@ -3,12 +3,13 @@
 	"id": "spotify-overlay",
 	"version": "${version}",
 	"name": "Spotify Overlay",
-	"description": "NanoVG in-game Spotify overlay using Windows SMTC, with album art, progress, and synced lyrics.",
+	"description": "Skija in-game Spotify overlay using Windows SMTC, with album art, progress, and synced lyrics. Works with OpenGL and Vulkan.",
 	"authors": [
 		"Me!"
 	],
 	"license": "CC0-1.0",
 	"environment": "client",
+	"accessWidener": "spotify-overlay.accesswidener",
 	"entrypoints": {
 		"main": [
 			{

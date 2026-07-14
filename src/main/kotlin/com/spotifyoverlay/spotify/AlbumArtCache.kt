@@ -1,19 +1,16 @@
 package com.spotifyoverlay.spotify
 
 import com.spotifyoverlay.SpotifyOverlay
-import org.lwjgl.nanovg.NanoVG.nvgCreateImageMem
-import org.lwjgl.nanovg.NanoVG.nvgDeleteImage
-import org.lwjgl.system.MemoryUtil
+import io.github.humbleui.skija.Image
 import java.net.URI
 import java.net.http.HttpClient
 import java.net.http.HttpRequest
 import java.net.http.HttpResponse
-import java.nio.ByteBuffer
 import java.time.Duration
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.Executors
 
-/** Downloads album art off-thread; uploads to NanoVG on the render thread. */
+/** Downloads album art off-thread; decodes to Skija Image on the render thread. */
 object AlbumArtCache {
 	private val http = HttpClient.newBuilder()
 		.connectTimeout(Duration.ofSeconds(10))
@@ -24,10 +21,8 @@ object AlbumArtCache {
 		Thread(r, "spotify-overlay-art").apply { isDaemon = true }
 	}
 
-	private data class GpuEntry(val imageId: Int, val buffer: ByteBuffer)
-
 	private val pendingBytes = ConcurrentHashMap<String, ByteArray>()
-	private val gpu = ConcurrentHashMap<String, GpuEntry>()
+	private val gpu = ConcurrentHashMap<String, Image>()
 	private val inFlight = ConcurrentHashMap.newKeySet<String>()
 
 	@Volatile
@@ -61,30 +56,22 @@ object AlbumArtCache {
 		}
 	}
 
-	fun imageId(): Int {
-		val key = activeKey ?: return -1
-		return gpu[key]?.imageId ?: -1
+	fun currentImage(): Image? {
+		val key = activeKey ?: return null
+		return gpu[key]
 	}
 
-	fun flushPending(nvg: Long) {
-		if (nvg == 0L) return
+	fun flushPending() {
 		for ((key, bytes) in pendingBytes.entries.toList()) {
 			if (gpu.containsKey(key)) {
 				pendingBytes.remove(key)
 				continue
 			}
-			val buffer = MemoryUtil.memAlloc(bytes.size)
-			buffer.put(bytes).flip()
-			val imageId = nvgCreateImageMem(nvg, 0, buffer)
-			if (imageId <= 0) {
-				MemoryUtil.memFree(buffer)
-				pendingBytes.remove(key)
-				SpotifyOverlay.LOGGER.warn("nvgCreateImageMem failed for {}", key)
-				continue
-			}
-			gpu.put(key, GpuEntry(imageId, buffer))?.let { old ->
-				nvgDeleteImage(nvg, old.imageId)
-				MemoryUtil.memFree(old.buffer)
+			try {
+				val image = Image.makeFromEncoded(bytes)
+				gpu.put(key, image)?.close()
+			} catch (e: Exception) {
+				SpotifyOverlay.LOGGER.warn("Skija image decode failed for {}: {}", key, e.message)
 			}
 			pendingBytes.remove(key)
 		}
@@ -92,9 +79,7 @@ object AlbumArtCache {
 		val keep = activeKey
 		for (key in gpu.keys.toList()) {
 			if (key == keep) continue
-			val entry = gpu.remove(key) ?: continue
-			nvgDeleteImage(nvg, entry.imageId)
-			MemoryUtil.memFree(entry.buffer)
+			gpu.remove(key)?.close()
 		}
 	}
 }

@@ -1,10 +1,10 @@
 package com.spotifyoverlay.render
 
-import com.mojang.blaze3d.opengl.GlTextureView
-import com.mojang.blaze3d.opengl.SpotifyOverlayGlAccess
 import com.mojang.blaze3d.systems.RenderSystem
+import com.mojang.blaze3d.textures.GpuTextureView
 import com.mojang.blaze3d.vertex.PoseStack
 import com.spotifyoverlay.SpotifyOverlay
+import io.github.humbleui.skija.Canvas
 import net.minecraft.client.Minecraft
 import net.minecraft.client.gui.GuiGraphicsExtractor
 import net.minecraft.client.gui.navigation.ScreenRectangle
@@ -13,88 +13,77 @@ import net.minecraft.client.renderer.SubmitNodeCollector
 import net.minecraft.client.renderer.state.gui.pip.PictureInPictureRenderState
 import org.joml.Matrix3x2f
 import org.joml.Matrix3x2fc
-import org.lwjgl.opengl.GL11
-import org.lwjgl.opengl.GL30
-import org.lwjgl.opengl.GL33C
 
-/** Renders NanoVG content into Minecraft's picture-in-picture GUI texture. */
-class NvgPipRenderer : PictureInPictureRenderer<NvgPipRenderer.NvgRenderState>() {
+/** Renders Skija content into Minecraft's picture-in-picture GUI texture (OpenGL or Vulkan). */
+class SkijaPipRenderer : PictureInPictureRenderer<SkijaPipRenderer.SkijaRenderState>() {
 	@Volatile
 	private var loggedFail = false
 
-	override fun getRenderStateClass(): Class<NvgRenderState> = NvgRenderState::class.java
+	@Volatile
+	private var loggedOk = false
 
-	override fun getTextureLabel(): String = "spotify-overlay-nvg"
+	override fun getRenderStateClass(): Class<SkijaRenderState> = SkijaRenderState::class.java
+
+	override fun getTextureLabel(): String = "spotify-overlay-skija"
 
 	override fun getTranslateY(height: Int, windowScaleFactor: Int): Float = height / 2f
 
-	override fun textureIsReadyToBlit(state: NvgRenderState): Boolean = false
+	override fun textureIsReadyToBlit(state: SkijaRenderState): Boolean = false
 
 	override fun renderToTexture(
-		state: NvgRenderState,
+		state: SkijaRenderState,
 		poseStack: PoseStack,
 		submitNodeCollector: SubmitNodeCollector,
 	) {
 		val window = Minecraft.getInstance().window
 		if (window.isIconified) return
 
-		val colorView = RenderSystem.outputColorTextureOverride as? GlTextureView
-		val depthView = RenderSystem.outputDepthTextureOverride as? GlTextureView
-		if (colorView == null || depthView == null) {
-			logFailOnce("missing output color/depth texture overrides")
+		val colorView = RenderSystem.outputColorTextureOverride as? GpuTextureView
+		if (colorView == null) {
+			logFailOnce("missing PiP color texture override")
 			return
 		}
 
+		val texture = colorView.texture()
 		val width = colorView.getWidth(0).takeIf { it > 0 } ?: return
 		val height = colorView.getHeight(0).takeIf { it > 0 } ?: return
-		val fbo = SpotifyOverlayGlAccess.resolveFbo(colorView, depthView)
-		if (fbo <= 0) {
-			logFailOnce("failed to resolve PiP FBO (OpenGL backend required)")
-			return
-		}
 
-		val rawW = width.toFloat()
-		val rawH = height.toFloat()
 		val guiW = window.guiScaledWidth.toFloat().coerceAtLeast(1f)
-		val dpr = (rawW / guiW).takeIf { it.isFinite() && it > 0f } ?: 1f
+		val dpr = (width.toFloat() / guiW).takeIf { it.isFinite() && it > 0f } ?: 1f
 
-		val nvg = NvgContext.ensureInitialized()
-		if (nvg == 0L) {
-			logFailOnce("NanoVG context is 0")
-			return
-		}
-
-		val glBackup = GlStateBackup()
-		glBackup.save()
 		try {
-			GL30.glBindFramebuffer(GL30.GL_FRAMEBUFFER, fbo)
-			GL11.glViewport(0, 0, width, height)
-			GL33C.glBindSampler(0, 0)
-
-			NvgContext.beginFrame(rawW / dpr, rawH / dpr, dpr)
-			try {
-				state.callback.invoke(nvg)
-			} finally {
-				NvgContext.endFrame()
+			SkijaFonts.ensureLoaded()
+			val backend = SkijaBackends.ensure(texture)
+			backend.renderInto(texture, dpr, state.callback)
+			if (!loggedOk) {
+				loggedOk = true
+				SpotifyOverlay.LOGGER.info(
+					"Skija PiP draw OK (backend={}, {}x{}, dpr={})",
+					texture.javaClass.simpleName,
+					width,
+					height,
+					"%.2f".format(dpr),
+				)
 			}
-		} finally {
-			glBackup.restore()
+		} catch (e: Exception) {
+			logFailOnce("Skija PiP draw failed: ${e.javaClass.simpleName}: ${e.message}")
+			SpotifyOverlay.LOGGER.warn("Skija PiP exception", e)
 		}
 	}
 
 	private fun logFailOnce(reason: String) {
 		if (loggedFail) return
 		loggedFail = true
-		SpotifyOverlay.LOGGER.error("NVG PiP render failed: {}", reason)
+		SpotifyOverlay.LOGGER.error("Skija PiP render failed: {}", reason)
 	}
 
-	data class NvgRenderState(
+	data class SkijaRenderState(
 		private val width: Int,
 		private val height: Int,
 		private val poseMatrix: Matrix3x2fc,
 		private val scissor: ScreenRectangle?,
 		private val boundsRect: ScreenRectangle?,
-		val callback: (Long) -> Unit,
+		val callback: (Canvas) -> Unit,
 	) : PictureInPictureRenderState {
 		override fun x0(): Int = 0
 		override fun y0(): Int = 0
@@ -107,7 +96,7 @@ class NvgPipRenderer : PictureInPictureRenderer<NvgPipRenderer.NvgRenderState>()
 	}
 
 	companion object {
-		fun submit(graphics: GuiGraphicsExtractor, callback: (Long) -> Unit) {
+		fun submit(graphics: GuiGraphicsExtractor, callback: (Canvas) -> Unit) {
 			val window = Minecraft.getInstance().window
 			if (window.isIconified || window.guiScaledWidth <= 0 || window.guiScaledHeight <= 0) return
 
@@ -120,7 +109,7 @@ class NvgPipRenderer : PictureInPictureRenderer<NvgPipRenderer.NvgRenderState>()
 			if (bounds.width() <= 0 || bounds.height() <= 0) return
 
 			graphics.guiRenderState.addPicturesInPictureState(
-				NvgRenderState(
+				SkijaRenderState(
 					graphics.guiWidth(),
 					graphics.guiHeight(),
 					pose,
