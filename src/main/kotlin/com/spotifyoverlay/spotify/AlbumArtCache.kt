@@ -10,7 +10,6 @@ import java.time.Duration
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.Executors
 
-/** Downloads album art off-thread; decodes to Skija Image on the render thread. */
 object AlbumArtCache {
 	private val http = HttpClient.newBuilder()
 		.connectTimeout(Duration.ofSeconds(10))
@@ -24,6 +23,7 @@ object AlbumArtCache {
 	private val pendingBytes = ConcurrentHashMap<String, ByteArray>()
 	private val gpu = ConcurrentHashMap<String, Image>()
 	private val inFlight = ConcurrentHashMap.newKeySet<String>()
+	private val deferredCloses = ArrayList<Image>(4)
 
 	@Volatile
 	private var activeKey: String? = null
@@ -62,6 +62,9 @@ object AlbumArtCache {
 	}
 
 	fun flushPending() {
+		if (pendingBytes.isEmpty() && (activeKey == null || gpu.keys.all { it == activeKey })) {
+			return
+		}
 		for ((key, bytes) in pendingBytes.entries.toList()) {
 			if (gpu.containsKey(key)) {
 				pendingBytes.remove(key)
@@ -69,7 +72,7 @@ object AlbumArtCache {
 			}
 			try {
 				val image = Image.makeFromEncoded(bytes)
-				gpu.put(key, image)?.close()
+				gpu.put(key, image)?.let { deferredClose(it) }
 			} catch (e: Exception) {
 				SpotifyOverlay.LOGGER.warn("Skija image decode failed for {}: {}", key, e.message)
 			}
@@ -79,7 +82,28 @@ object AlbumArtCache {
 		val keep = activeKey
 		for (key in gpu.keys.toList()) {
 			if (key == keep) continue
-			gpu.remove(key)?.close()
+			gpu.remove(key)?.let { deferredClose(it) }
+		}
+	}
+
+	fun reapDeferredCloses() {
+		val batch = synchronized(deferredCloses) {
+			if (deferredCloses.isEmpty()) return
+			val copy = ArrayList(deferredCloses)
+			deferredCloses.clear()
+			copy
+		}
+		for (image in batch) {
+			try {
+				image.close()
+			} catch (_: Exception) {
+			}
+		}
+	}
+
+	private fun deferredClose(image: Image) {
+		synchronized(deferredCloses) {
+			deferredCloses.add(image)
 		}
 	}
 }

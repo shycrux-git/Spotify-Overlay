@@ -10,7 +10,6 @@ data class TrackState(
 	val isPlaying: Boolean,
 	val fetchedAt: Long,
 ) {
-	/** Extrapolates from the last trusted SMTC sample while playing. */
 	fun interpolatedProgressMs(now: Long = System.currentTimeMillis()): Long {
 		if (!isPlaying) return progressMs.coerceIn(0L, durationMs.coerceAtLeast(0L))
 		val elapsed = (now - fetchedAt).coerceAtLeast(0L)
@@ -18,7 +17,6 @@ data class TrackState(
 	}
 
 	companion object {
-		/** Ignore backward SMTC lag below this; treat larger jumps as seeks. */
 		const val SEEK_THRESHOLD_MS = 8000L
 
 		fun withSmoothedProgress(

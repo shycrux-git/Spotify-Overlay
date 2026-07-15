@@ -19,7 +19,6 @@ import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicReference
 
-/** Now-playing metadata from Windows System Media Transport Controls (SMTC). */
 object WindowsMediaSessionClient {
 	private val json = Json { ignoreUnknownKeys = true }
 	private val trackRef = AtomicReference<TrackState?>(null)

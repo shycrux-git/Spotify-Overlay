@@ -1,44 +1,33 @@
-package com.spotifyoverlay.render
+﻿package com.spotifyoverlay.render
 
 import com.mojang.blaze3d.GpuFormat
-import com.mojang.blaze3d.opengl.GlTexture
 import com.mojang.blaze3d.pipeline.TextureTarget
 import com.mojang.blaze3d.systems.RenderSystem
-import com.mojang.blaze3d.textures.GpuTexture
 import com.mojang.blaze3d.vulkan.VulkanConst
 import com.mojang.blaze3d.vulkan.VulkanDevice
 import com.mojang.blaze3d.vulkan.VulkanGpuTexture
 import io.github.humbleui.skija.BackendRenderTarget
+import io.github.humbleui.skija.Bitmap
 import io.github.humbleui.skija.Canvas
+import io.github.humbleui.skija.ColorAlphaType
 import io.github.humbleui.skija.ColorSpace
 import io.github.humbleui.skija.ColorType
 import io.github.humbleui.skija.DirectContext
-import io.github.humbleui.skija.FramebufferFormat
+import io.github.humbleui.skija.Image
+import io.github.humbleui.skija.ImageInfo
 import io.github.humbleui.skija.Surface
 import io.github.humbleui.skija.SurfaceOrigin
 import io.github.humbleui.types.Rect
-import org.lwjgl.opengl.GL11C
-import org.lwjgl.opengl.GL13C
-import org.lwjgl.opengl.GL14C
-import org.lwjgl.opengl.GL15C
-import org.lwjgl.opengl.GL20C
-import org.lwjgl.opengl.GL30C
-import org.lwjgl.opengl.GL31C
-import org.lwjgl.system.MemoryStack
 import org.lwjgl.vulkan.VK
 import org.lwjgl.vulkan.VK10
 import org.lwjgl.vulkan.VK12
+import java.nio.ByteBuffer
+import java.nio.ByteOrder
+import kotlin.math.ceil
+import kotlin.math.floor
+import kotlin.math.max
 
-/**
- * Dual-backend Skija (from cryleak/Odin).
- * OpenGL draws into the PiP texture.
- * Vulkan draws into a private TextureTarget and composites onto the main framebuffer
- * at GameRenderer TAIL (PiP color attachments are not safe to wrap mid-pass).
- */
-internal interface SkijaBackend : AutoCloseable {
-	fun supports(texture: GpuTexture): Boolean
-	fun renderInto(destination: GpuTexture, dpr: Float, draw: (Canvas) -> Unit)
-}
+internal interface SkijaBackend : AutoCloseable
 
 internal object SkijaBackends {
 	private val colorSpace: ColorSpace = ColorSpace.getSRGB()
@@ -46,29 +35,68 @@ internal object SkijaBackends {
 
 	fun isVulkan(): Boolean = RenderSystem.getDevice().backend is VulkanDevice
 
-	fun ensure(texture: GpuTexture): SkijaBackend {
-		val current = active
-		if (current != null && current.supports(texture)) return current
-		current?.close()
-		val next = when (texture) {
-			is VulkanGpuTexture -> VulkanSkijaBackend(colorSpace)
-			is GlTexture -> OpenGlSkijaBackend(colorSpace)
-			else -> error("Unsupported GpuTexture backend: ${texture.javaClass.name}")
-		}
-		active = next
-		return next
+	fun renderVulkanOntoMain(
+		guiWidth: Int,
+		guiHeight: Int,
+		originX: Float,
+		originY: Float,
+		regionW: Float,
+		regionH: Float,
+		draw: (Canvas) -> Unit,
+	) {
+		val backend = ensureVulkan()
+		backend.renderOntoMain(guiWidth, guiHeight, originX, originY, regionW, regionH, draw)
 	}
 
-	fun renderVulkanOntoMain(guiWidth: Int, guiHeight: Int, draw: (Canvas) -> Unit) {
+	fun renderOpenGlAtlas(
+		guiWidth: Int,
+		guiHeight: Int,
+		originX: Float,
+		originY: Float,
+		regionW: Float,
+		regionH: Float,
+		staticDirty: Boolean,
+		staticUrgent: Boolean,
+		lyricsStrip: Rect?,
+		lyricsDirty: Boolean,
+		progressStrip: Rect?,
+		freezeDynamic: Boolean,
+		drawStatic: (Canvas) -> Unit,
+		drawLyrics: (Canvas) -> Unit,
+		drawProgress: (Canvas) -> Unit,
+	): com.mojang.blaze3d.textures.GpuTextureView? {
+		val backend = ensureOpenGl()
+		return backend.renderAtlas(
+			guiWidth,
+			guiHeight,
+			originX,
+			originY,
+			regionW,
+			regionH,
+			staticDirty,
+			staticUrgent,
+			lyricsStrip,
+			lyricsDirty,
+			progressStrip,
+			freezeDynamic,
+			drawStatic,
+			drawLyrics,
+			drawProgress,
+		)
+	}
+
+	private fun ensureVulkan(): VulkanSkijaBackend {
 		val current = active
-		val backend = when (current) {
-			is VulkanSkijaBackend -> current
-			else -> {
-				current?.close()
-				VulkanSkijaBackend(colorSpace).also { active = it }
-			}
-		}
-		backend.renderOntoMain(guiWidth, guiHeight, draw)
+		if (current is VulkanSkijaBackend) return current
+		current?.close()
+		return VulkanSkijaBackend(colorSpace).also { active = it }
+	}
+
+	private fun ensureOpenGl(): OpenGlSkijaBackend {
+		val current = active
+		if (current is OpenGlSkijaBackend) return current
+		current?.close()
+		return OpenGlSkijaBackend(colorSpace).also { active = it }
 	}
 
 	fun shutdown() {
@@ -89,27 +117,28 @@ private class VulkanSkijaBackend(
 	private var compositeTexture: VulkanGpuTexture? = null
 	private var overlayTarget: TextureTarget? = null
 
-	override fun supports(texture: GpuTexture): Boolean = texture is VulkanGpuTexture
-
-	/** Unused for Vulkan PiP — see [renderOntoMain]. */
-	override fun renderInto(destination: GpuTexture, dpr: Float, draw: (Canvas) -> Unit) {
-		error("Vulkan Skija must composite via renderOntoMain, not PiP wrap")
-	}
-
-	fun renderOntoMain(guiWidth: Int, guiHeight: Int, draw: (Canvas) -> Unit) {
+	fun renderOntoMain(
+		guiWidth: Int,
+		guiHeight: Int,
+		originX: Float,
+		originY: Float,
+		regionW: Float,
+		regionH: Float,
+		draw: (Canvas) -> Unit,
+	) {
 		val mainTarget = net.minecraft.client.Minecraft.getInstance().gameRenderer.mainRenderTarget()
 		val mainTex = mainTarget.getColorTexture() as? VulkanGpuTexture
 			?: error("Main render target is not a VulkanGpuTexture")
-		val width = mainTarget.width
-		val height = mainTarget.height
-		val dpr = (width.toFloat() / guiWidth.toFloat().coerceAtLeast(1f))
+		val dpr = (mainTarget.width.toFloat() / guiWidth.toFloat().coerceAtLeast(1f))
 			.takeIf { it.isFinite() && it > 0f } ?: 1f
 
-		// Finish any queued Minecraft Vulkan work before Skija takes the shared queue.
+		val texW = max(1, ceil(regionW * dpr).toInt())
+		val texH = max(1, ceil(regionH * dpr).toInt())
+
 		RenderSystem.getDevice().createCommandEncoder().submit()
 
 		val context = ensureContext()
-		val overlay = ensureOverlayTarget(width, height)
+		val overlay = ensureOverlayTarget(texW, texH)
 		val overlayTex = overlay.getColorTexture() as? VulkanGpuTexture
 			?: error("Vulkan overlay target has no color texture")
 
@@ -130,10 +159,12 @@ private class VulkanSkijaBackend(
 		try {
 			RenderSystem.getDevice().createCommandEncoder().submit()
 			val output = ensureCompositeSurface(context, mainTex)
-			// Do not clear the main target — draw the transparent overlay snapshot over it.
+			val dstX = originX * dpr
+			val dstY = originY * dpr
 			output.canvas.drawImageRect(
 				snapshot,
-				Rect.makeWH(width.toFloat(), height.toFloat()),
+				Rect.makeXYWH(0f, 0f, texW.toFloat(), texH.toFloat()),
+				Rect.makeXYWH(dstX, dstY, regionW * dpr, regionH * dpr),
 			)
 			context.flushAndSubmit(output, false)
 		} finally {
@@ -288,239 +319,329 @@ private class VulkanSkijaBackend(
 private class OpenGlSkijaBackend(
 	private val colorSpace: ColorSpace,
 ) : SkijaBackend {
-	private var directContext: DirectContext? = null
-	private var surface: Surface? = null
-	private var renderTarget: BackendRenderTarget? = null
-	private var surfaceTextureId = 0
-	private var framebufferId = 0
+	private var overlayTarget: TextureTarget? = null
+	private var rasterSurface: Surface? = null
+	private var stripSurface: Surface? = null
+	private var lyricsSurface: Surface? = null
+	private var uploadBitmap: Bitmap? = null
+	private var stripBitmap: Bitmap? = null
+	private var lyricsBitmap: Bitmap? = null
+	private var staticSnapshot: Image? = null
+	private var atlasW = 0
+	private var atlasH = 0
+	private var lastStripNanos = 0L
+	private var lastLyricsNanos = 0L
+	private var cachedView: com.mojang.blaze3d.textures.GpuTextureView? = null
+	private var hasStatic = false
 
-	override fun supports(texture: GpuTexture): Boolean = texture is GlTexture
+	fun renderAtlas(
+		guiWidth: Int,
+		guiHeight: Int,
+		originX: Float,
+		originY: Float,
+		regionW: Float,
+		regionH: Float,
+		staticDirty: Boolean,
+		staticUrgent: Boolean,
+		lyricsStrip: Rect?,
+		lyricsDirty: Boolean,
+		progressStrip: Rect?,
+		freezeDynamic: Boolean,
+		drawStatic: (Canvas) -> Unit,
+		drawLyrics: (Canvas) -> Unit,
+		drawProgress: (Canvas) -> Unit,
+	): com.mojang.blaze3d.textures.GpuTextureView? {
+		val mainTarget = net.minecraft.client.Minecraft.getInstance().gameRenderer.mainRenderTarget()
+		val dpr = (mainTarget.width.toFloat() / guiWidth.toFloat().coerceAtLeast(1f))
+			.takeIf { it.isFinite() && it > 0f } ?: 1f
 
-	override fun renderInto(destination: GpuTexture, dpr: Float, draw: (Canvas) -> Unit) {
-		check(destination is GlTexture)
-		val state = OpenGlStateSnapshot.capture()
-		try {
-			val context = ensureContext()
-			context.resetGLAll()
-			ensureSurface(context, destination)
-			val prepared = surface ?: error("Skija OpenGL surface missing")
-			val canvas = prepared.canvas
-			val save = canvas.save()
-			try {
-				canvas.clear(0x00000000)
-				canvas.scale(dpr, dpr)
-				draw(canvas)
-			} finally {
-				canvas.restoreToCount(save)
-			}
-			context.flushAndSubmit(prepared, false)
-			context.resetGLAll()
-		} finally {
-			state.restore()
+		val texW = max(1, ceil(regionW * dpr).toInt())
+		val texH = max(1, ceil(regionH * dpr).toInt())
+		val sizeChanged = texW != atlasW || texH != atlasH
+		val now = System.nanoTime()
+		val needStatic =
+			sizeChanged ||
+				!hasStatic ||
+				cachedView == null ||
+				staticUrgent ||
+				(staticDirty && !hasStatic)
+
+		atlasW = texW
+		atlasH = texH
+		val overlay = ensureOverlayTarget(texW, texH)
+		val gpuTex = overlay.getColorTexture()
+			?: error("OpenGL overlay target has no color texture")
+
+		if (needStatic) {
+			paintAndUploadFull(texW, texH, dpr, gpuTex, drawStatic)
+			hasStatic = true
 		}
+
+		val lyricsRect = lyricsStrip
+		val needLyrics = !freezeDynamic && lyricsRect != null && (lyricsDirty || needStatic)
+		if (lyricsRect != null && needLyrics) {
+			val due = needStatic || now - lastLyricsNanos >= MIN_LYRICS_INTERVAL_NS
+			if (due) {
+				paintAndUploadLayer(
+					texW, texH, dpr, originX, originY, regionW, regionH,
+					lyricsRect, gpuTex, drawLyrics, lyrics = true,
+				)
+				lastLyricsNanos = now
+			}
+		}
+
+		val strip = progressStrip
+		if (
+			!freezeDynamic &&
+			strip != null &&
+			(needStatic || now - lastStripNanos >= MIN_STRIP_INTERVAL_NS)
+		) {
+			paintAndUploadLayer(
+				texW, texH, dpr, originX, originY, regionW, regionH,
+				strip, gpuTex, drawProgress, lyrics = false,
+			)
+			lastStripNanos = now
+		}
+
+		cachedView = overlay.getColorTextureView()
+		return cachedView
+	}
+
+	private fun paintAndUploadFull(
+		texW: Int,
+		texH: Int,
+		dpr: Float,
+		gpuTex: com.mojang.blaze3d.textures.GpuTexture,
+		drawStatic: (Canvas) -> Unit,
+	) {
+		val imageInfo = ImageInfo(texW, texH, ColorType.RGBA_8888, ColorAlphaType.UNPREMUL, colorSpace)
+		val surface = ensureRasterSurface(imageInfo)
+		val canvas = surface.canvas
+		val save = canvas.save()
+		try {
+			canvas.clear(0x00000000)
+			canvas.scale(dpr, dpr)
+			drawStatic(canvas)
+		} finally {
+			canvas.restoreToCount(save)
+		}
+
+		staticSnapshot?.close()
+		staticSnapshot = surface.makeImageSnapshot()
+
+		val bitmap = ensureUploadBitmap(imageInfo)
+		if (!surface.readPixels(bitmap, 0, 0)) {
+			error("Failed to read Skija raster pixels")
+		}
+		uploadRegion(gpuTex, bitmap, 0, 0, texW, texH)
+	}
+
+	private fun paintAndUploadLayer(
+		texW: Int,
+		texH: Int,
+		dpr: Float,
+		originX: Float,
+		originY: Float,
+		regionW: Float,
+		regionH: Float,
+		strip: Rect,
+		gpuTex: com.mojang.blaze3d.textures.GpuTexture,
+		draw: (Canvas) -> Unit,
+		lyrics: Boolean,
+	) {
+		val snapshot = staticSnapshot ?: return
+		val localLeft = (strip.left - originX).coerceAtLeast(0f)
+		val localTop = (strip.top - originY).coerceAtLeast(0f)
+		val localRight = (strip.right - originX).coerceAtMost(regionW)
+		val localBottom = (strip.bottom - originY).coerceAtMost(regionH)
+		if (localRight - localLeft < 1f || localBottom - localTop < 1f) return
+
+		val px = floor(localLeft * dpr).toInt().coerceIn(0, texW - 1)
+		val py = floor(localTop * dpr).toInt().coerceIn(0, texH - 1)
+		val pw = ceil(localRight * dpr).toInt().coerceAtMost(texW) - px
+		val ph = ceil(localBottom * dpr).toInt().coerceAtMost(texH) - py
+		if (pw < 1 || ph < 1) return
+
+		val layerInfo = ImageInfo(pw, ph, ColorType.RGBA_8888, ColorAlphaType.UNPREMUL, colorSpace)
+		val surface = if (lyrics) ensureLyricsSurface(layerInfo) else ensureStripSurface(layerInfo)
+		val canvas = surface.canvas
+		val save = canvas.save()
+		try {
+			canvas.clear(0x00000000)
+			canvas.drawImageRect(
+				snapshot,
+				Rect.makeXYWH(px.toFloat(), py.toFloat(), pw.toFloat(), ph.toFloat()),
+				Rect.makeXYWH(0f, 0f, pw.toFloat(), ph.toFloat()),
+			)
+			canvas.scale(dpr, dpr)
+			canvas.translate(-(originX + px / dpr), -(originY + py / dpr))
+			draw(canvas)
+		} finally {
+			canvas.restoreToCount(save)
+		}
+
+		val bitmap = if (lyrics) ensureLyricsBitmap(layerInfo) else ensureStripBitmap(layerInfo)
+		if (!surface.readPixels(bitmap, 0, 0)) {
+			error("Failed to read Skija layer pixels")
+		}
+		uploadRegion(gpuTex, bitmap, px, py, pw, ph)
+	}
+
+	private fun uploadRegion(
+		gpuTex: com.mojang.blaze3d.textures.GpuTexture,
+		bitmap: Bitmap,
+		destX: Int,
+		destY: Int,
+		width: Int,
+		height: Int,
+	) {
+		val pixmap = bitmap.peekPixels()
+		val pixelBuffer = if (pixmap != null) {
+			val buf = pixmap.buffer
+			buf.position(0)
+			buf.limit(width * height * 4)
+			buf
+		} else {
+			val pixels = bitmap.readPixels()
+			val buf = ByteBuffer.allocateDirect(pixels.size).order(ByteOrder.nativeOrder())
+			buf.put(pixels).flip()
+			buf
+		}
+		RenderSystem.getDevice().createCommandEncoder()
+			.writeToTexture(gpuTex, pixelBuffer, 0, 0, destX, destY, width, height)
 	}
 
 	override fun close() {
-		surface?.close()
-		surface = null
-		renderTarget?.close()
-		renderTarget = null
-		if (framebufferId != 0) {
-			GL30C.glDeleteFramebuffers(framebufferId)
-			framebufferId = 0
+		destroyOverlayTarget()
+		rasterSurface?.close()
+		rasterSurface = null
+		stripSurface?.close()
+		stripSurface = null
+		lyricsSurface?.close()
+		lyricsSurface = null
+		uploadBitmap?.close()
+		uploadBitmap = null
+		stripBitmap?.close()
+		stripBitmap = null
+		lyricsBitmap?.close()
+		lyricsBitmap = null
+		staticSnapshot?.close()
+		staticSnapshot = null
+		cachedView = null
+		hasStatic = false
+		atlasW = 0
+		atlasH = 0
+	}
+
+	private fun ensureRasterSurface(info: ImageInfo): Surface {
+		val existing = rasterSurface
+		if (existing != null && existing.width == info.width && existing.height == info.height) {
+			return existing
 		}
-		surfaceTextureId = 0
-		directContext?.close()
-		directContext = null
+		existing?.close()
+		val next = Surface.makeRaster(info)
+		rasterSurface = next
+		return next
 	}
 
-	private fun ensureContext(): DirectContext {
-		directContext?.let { return it }
-		val context = DirectContext.makeGL()
-		directContext = context
-		return context
+	private fun ensureStripSurface(info: ImageInfo): Surface {
+		val existing = stripSurface
+		if (existing != null && existing.width == info.width && existing.height == info.height) {
+			return existing
+		}
+		existing?.close()
+		val next = Surface.makeRaster(info)
+		stripSurface = next
+		return next
 	}
 
-	private fun ensureSurface(context: DirectContext, texture: GlTexture) {
-		val width = texture.getWidth(0)
-		val height = texture.getHeight(0)
+	private fun ensureLyricsSurface(info: ImageInfo): Surface {
+		val existing = lyricsSurface
+		if (existing != null && existing.width == info.width && existing.height == info.height) {
+			return existing
+		}
+		existing?.close()
+		val next = Surface.makeRaster(info)
+		lyricsSurface = next
+		return next
+	}
+
+	private fun ensureUploadBitmap(info: ImageInfo): Bitmap {
+		val existing = uploadBitmap
 		if (
-			surface != null &&
-			renderTarget != null &&
-			surfaceTextureId == texture.glId() &&
-			surface?.width == width &&
-			surface?.height == height
+			existing != null &&
+			!existing.isNull &&
+			existing.width == info.width &&
+			existing.height == info.height
 		) {
-			return
+			return existing
 		}
-
-		surface?.close()
-		renderTarget?.close()
-		if (framebufferId != 0) {
-			GL30C.glDeleteFramebuffers(framebufferId)
-			framebufferId = 0
-		}
-
-		framebufferId = createFramebuffer(texture)
-		surfaceTextureId = texture.glId()
-		val target = BackendRenderTarget.makeGL(
-			width,
-			height,
-			0,
-			0,
-			framebufferId,
-			FramebufferFormat.GR_GL_RGBA8,
-		)
-		renderTarget = target
-		surface = Surface.wrapBackendRenderTarget(
-			context,
-			target,
-			SurfaceOrigin.BOTTOM_LEFT,
-			ColorType.RGBA_8888,
-			colorSpace,
-		)
+		existing?.close()
+		val next = Bitmap()
+		check(next.allocPixels(info)) { "Failed to alloc Skija upload bitmap" }
+		uploadBitmap = next
+		return next
 	}
 
-	private fun createFramebuffer(texture: GlTexture): Int {
-		val previousDraw = GL11C.glGetInteger(GL30C.GL_DRAW_FRAMEBUFFER_BINDING)
-		val previousRead = GL11C.glGetInteger(GL30C.GL_READ_FRAMEBUFFER_BINDING)
-		val fbo = GL30C.glGenFramebuffers()
-		GL30C.glBindFramebuffer(GL30C.GL_FRAMEBUFFER, fbo)
-		GL30C.glFramebufferTexture2D(
-			GL30C.GL_FRAMEBUFFER,
-			GL30C.GL_COLOR_ATTACHMENT0,
-			GL11C.GL_TEXTURE_2D,
-			texture.glId(),
-			texture.fboMipLevel(),
-		)
-		GL11C.glDrawBuffer(GL30C.GL_COLOR_ATTACHMENT0)
-		GL11C.glReadBuffer(GL30C.GL_COLOR_ATTACHMENT0)
-		val status = GL30C.glCheckFramebufferStatus(GL30C.GL_FRAMEBUFFER)
-		GL30C.glBindFramebuffer(GL30C.GL_DRAW_FRAMEBUFFER, previousDraw)
-		GL30C.glBindFramebuffer(GL30C.GL_READ_FRAMEBUFFER, previousRead)
-		if (status != GL30C.GL_FRAMEBUFFER_COMPLETE) {
-			GL30C.glDeleteFramebuffers(fbo)
-			error("Skija OpenGL FBO incomplete: 0x${status.toString(16)}")
+	private fun ensureStripBitmap(info: ImageInfo): Bitmap {
+		val existing = stripBitmap
+		if (
+			existing != null &&
+			!existing.isNull &&
+			existing.width == info.width &&
+			existing.height == info.height
+		) {
+			return existing
 		}
-		return fbo
+		existing?.close()
+		val next = Bitmap()
+		check(next.allocPixels(info)) { "Failed to alloc Skija strip bitmap" }
+		stripBitmap = next
+		return next
 	}
-}
 
-private class OpenGlStateSnapshot(
-	private val drawFramebuffer: Int,
-	private val readFramebuffer: Int,
-	private val viewport: IntArray,
-	private val scissorBox: IntArray,
-	private val currentProgram: Int,
-	private val activeTexture: Int,
-	private val texture2d: Int,
-	private val vertexArray: Int,
-	private val arrayBuffer: Int,
-	private val elementArrayBuffer: Int,
-	private val pixelPackBuffer: Int,
-	private val pixelUnpackBuffer: Int,
-	private val uniformBuffer: Int,
-	private val blend: Boolean,
-	private val depthTest: Boolean,
-	private val cullFace: Boolean,
-	private val scissorTest: Boolean,
-	private val stencilTest: Boolean,
-	private val multisample: Boolean,
-	private val polygonOffsetFill: Boolean,
-	private val depthMask: Boolean,
-	private val colorMask: BooleanArray,
-	private val blendSrcRgb: Int,
-	private val blendDstRgb: Int,
-	private val blendSrcAlpha: Int,
-	private val blendDstAlpha: Int,
-	private val blendEquationRgb: Int,
-	private val blendEquationAlpha: Int,
-) {
-	fun restore() {
-		setEnabled(GL11C.GL_BLEND, blend)
-		setEnabled(GL11C.GL_DEPTH_TEST, depthTest)
-		setEnabled(GL11C.GL_CULL_FACE, cullFace)
-		setEnabled(GL11C.GL_SCISSOR_TEST, scissorTest)
-		setEnabled(GL11C.GL_STENCIL_TEST, stencilTest)
-		setEnabled(GL13C.GL_MULTISAMPLE, multisample)
-		setEnabled(GL11C.GL_POLYGON_OFFSET_FILL, polygonOffsetFill)
-		GL30C.glBindFramebuffer(GL30C.GL_DRAW_FRAMEBUFFER, drawFramebuffer)
-		GL30C.glBindFramebuffer(GL30C.GL_READ_FRAMEBUFFER, readFramebuffer)
-		GL11C.glViewport(viewport[0], viewport[1], viewport[2], viewport[3])
-		GL11C.glScissor(scissorBox[0], scissorBox[1], scissorBox[2], scissorBox[3])
-		GL11C.glDepthMask(depthMask)
-		GL11C.glColorMask(colorMask[0], colorMask[1], colorMask[2], colorMask[3])
-		GL14C.glBlendFuncSeparate(blendSrcRgb, blendDstRgb, blendSrcAlpha, blendDstAlpha)
-		GL20C.glBlendEquationSeparate(blendEquationRgb, blendEquationAlpha)
-		GL20C.glUseProgram(currentProgram)
-		GL13C.glActiveTexture(activeTexture)
-		GL11C.glBindTexture(GL11C.GL_TEXTURE_2D, texture2d)
-		GL30C.glBindVertexArray(vertexArray)
-		GL15C.glBindBuffer(GL15C.GL_ARRAY_BUFFER, arrayBuffer)
-		GL15C.glBindBuffer(GL15C.GL_ELEMENT_ARRAY_BUFFER, elementArrayBuffer)
-		GL15C.glBindBuffer(GL_PIXEL_PACK_BUFFER, pixelPackBuffer)
-		GL15C.glBindBuffer(GL_PIXEL_UNPACK_BUFFER, pixelUnpackBuffer)
-		GL15C.glBindBuffer(GL31C.GL_UNIFORM_BUFFER, uniformBuffer)
+	private fun ensureLyricsBitmap(info: ImageInfo): Bitmap {
+		val existing = lyricsBitmap
+		if (
+			existing != null &&
+			!existing.isNull &&
+			existing.width == info.width &&
+			existing.height == info.height
+		) {
+			return existing
+		}
+		existing?.close()
+		val next = Bitmap()
+		check(next.allocPixels(info)) { "Failed to alloc Skija lyrics bitmap" }
+		lyricsBitmap = next
+		return next
+	}
+
+	private fun ensureOverlayTarget(width: Int, height: Int): TextureTarget {
+		val existing = overlayTarget
+		if (existing != null && existing.width == width && existing.height == height) {
+			return existing
+		}
+		destroyOverlayTarget()
+		val created = TextureTarget("spotify-overlay-skija", width, height, false, GpuFormat.RGBA8_UNORM)
+		overlayTarget = created
+		cachedView = null
+		hasStatic = false
+		staticSnapshot?.close()
+		staticSnapshot = null
+		return created
+	}
+
+	private fun destroyOverlayTarget() {
+		overlayTarget?.destroyBuffers()
+		overlayTarget = null
+		cachedView = null
+		hasStatic = false
 	}
 
 	companion object {
-		private const val GL_PIXEL_PACK_BUFFER = 35051
-		private const val GL_PIXEL_UNPACK_BUFFER = 35052
-		private const val GL_PIXEL_PACK_BUFFER_BINDING = 35053
-		private const val GL_PIXEL_UNPACK_BUFFER_BINDING = 35055
-
-		fun capture(): OpenGlStateSnapshot = MemoryStack.stackPush().use { stack ->
-			val viewport = IntArray(4)
-			val viewportBuf = stack.mallocInt(4)
-			GL11C.glGetIntegerv(GL11C.GL_VIEWPORT, viewportBuf)
-			viewportBuf.get(viewport)
-
-			val scissor = IntArray(4)
-			val scissorBuf = stack.mallocInt(4)
-			GL11C.glGetIntegerv(GL11C.GL_SCISSOR_BOX, scissorBuf)
-			scissorBuf.get(scissor)
-
-			val colorMask = BooleanArray(4)
-			val colorMaskBuf = stack.malloc(4)
-			GL11C.glGetBooleanv(GL11C.GL_COLOR_WRITEMASK, colorMaskBuf)
-			for (i in colorMask.indices) {
-				colorMask[i] = colorMaskBuf.get(i).toInt() != 0
-			}
-
-			OpenGlStateSnapshot(
-				GL11C.glGetInteger(GL30C.GL_DRAW_FRAMEBUFFER_BINDING),
-				GL11C.glGetInteger(GL30C.GL_READ_FRAMEBUFFER_BINDING),
-				viewport,
-				scissor,
-				GL11C.glGetInteger(GL20C.GL_CURRENT_PROGRAM),
-				GL11C.glGetInteger(GL13C.GL_ACTIVE_TEXTURE),
-				GL11C.glGetInteger(GL11C.GL_TEXTURE_BINDING_2D),
-				GL11C.glGetInteger(GL30C.GL_VERTEX_ARRAY_BINDING),
-				GL11C.glGetInteger(GL15C.GL_ARRAY_BUFFER_BINDING),
-				GL11C.glGetInteger(GL15C.GL_ELEMENT_ARRAY_BUFFER_BINDING),
-				GL11C.glGetInteger(GL_PIXEL_PACK_BUFFER_BINDING),
-				GL11C.glGetInteger(GL_PIXEL_UNPACK_BUFFER_BINDING),
-				GL11C.glGetInteger(GL31C.GL_UNIFORM_BUFFER_BINDING),
-				GL11C.glIsEnabled(GL11C.GL_BLEND),
-				GL11C.glIsEnabled(GL11C.GL_DEPTH_TEST),
-				GL11C.glIsEnabled(GL11C.GL_CULL_FACE),
-				GL11C.glIsEnabled(GL11C.GL_SCISSOR_TEST),
-				GL11C.glIsEnabled(GL11C.GL_STENCIL_TEST),
-				GL11C.glIsEnabled(GL13C.GL_MULTISAMPLE),
-				GL11C.glIsEnabled(GL11C.GL_POLYGON_OFFSET_FILL),
-				GL11C.glGetBoolean(GL11C.GL_DEPTH_WRITEMASK),
-				colorMask,
-				GL11C.glGetInteger(GL14C.GL_BLEND_SRC_RGB),
-				GL11C.glGetInteger(GL14C.GL_BLEND_DST_RGB),
-				GL11C.glGetInteger(GL14C.GL_BLEND_SRC_ALPHA),
-				GL11C.glGetInteger(GL14C.GL_BLEND_DST_ALPHA),
-				GL11C.glGetInteger(GL20C.GL_BLEND_EQUATION_RGB),
-				GL11C.glGetInteger(GL20C.GL_BLEND_EQUATION_ALPHA),
-			)
-		}
-	}
-
-	private fun setEnabled(cap: Int, enabled: Boolean) {
-		if (enabled) GL11C.glEnable(cap) else GL11C.glDisable(cap)
+		private const val MIN_STRIP_INTERVAL_NS = 16_666_667L
+		private const val MIN_LYRICS_INTERVAL_NS = 33_333_333L
 	}
 }
+

@@ -2,6 +2,7 @@ package com.spotifyoverlay.spotify
 
 import com.spotifyoverlay.SpotifyOverlay
 import com.spotifyoverlay.config.ModConfig
+import com.spotifyoverlay.config.MxmConfig
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
@@ -24,7 +25,6 @@ import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicReference
 
-/** Synced lyrics via Musixmatch, with LRCLIB as a parallel fallback. */
 object SpotifyLyricsClient {
 	private const val APP_ID = "android-player-v1.0"
 	private const val TOKEN_URL = "https://apic.musixmatch.com/ws/1.1/token.get"
@@ -171,10 +171,10 @@ object SpotifyLyricsClient {
 
 	private fun ensureToken(): String? {
 		if (mxmToken.isNotBlank()) return mxmToken
-		val cfg = ModConfig.get()
-		mintToken(cfg.mxmGuid)?.let { return it }
-		if (cfg.mxmToken.isNotBlank()) {
-			mxmToken = cfg.mxmToken
+		val mxm = MxmConfig.get()
+		mintToken(mxm.guid)?.let { return it }
+		if (mxm.token.isNotBlank()) {
+			mxmToken = mxm.token
 			return mxmToken
 		}
 		return null
@@ -183,18 +183,18 @@ object SpotifyLyricsClient {
 	private fun mintToken(existingGuid: String): String? {
 		val guid = existingGuid.ifBlank {
 			UUID.randomUUID().toString().also { id ->
-				ModConfig.update { mxmGuid = id }
+				MxmConfig.update { guid = id }
 			}
 		}
 		val url = "$TOKEN_URL?format=json&guid=${enc(guid)}&app_id=${enc(APP_ID)}"
 		val body = getJson(url) ?: return null
-		val token = body["message"]?.jsonObject
+		val minted = body["message"]?.jsonObject
 			?.get("body")?.jsonObject
 			?.get("user_token")?.jsonPrimitive?.contentOrNull
 			?: return null
-		mxmToken = token
-		ModConfig.update { mxmToken = token }
-		return token
+		mxmToken = minted
+		MxmConfig.update { token = minted }
+		return minted
 	}
 
 	private data class MatchedTrack(
@@ -281,7 +281,7 @@ object SpotifyLyricsClient {
 
 		attempt(token)?.let { return it }
 		if (mxmToken.isBlank()) {
-			val refreshed = mintToken(ModConfig.get().mxmGuid) ?: return null
+			val refreshed = mintToken(MxmConfig.get().guid) ?: return null
 			return attempt(refreshed)
 		}
 		return null
@@ -433,7 +433,7 @@ object SpotifyLyricsClient {
 		if (status != null && status != 200) {
 			if (status == 401 || status == 403) {
 				mxmToken = ""
-				ModConfig.update { mxmToken = "" }
+				MxmConfig.update { token = "" }
 			}
 			SpotifyOverlay.LOGGER.debug("MXM status {} for {}", status, url.take(100))
 			return null

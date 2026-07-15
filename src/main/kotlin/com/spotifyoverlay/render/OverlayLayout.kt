@@ -14,13 +14,18 @@ object OverlayLayout {
 			mx >= x && mx < x + w && my >= y && my < y + h
 	}
 
-	fun baseHeight(showLyrics: Boolean): Float =
-		if (showLyrics) MEDIA_H + LYRICS_H else MEDIA_H
+	fun baseHeight(lyricsExpand: Float): Float =
+		MEDIA_H + LYRICS_H * lyricsExpand.coerceIn(0f, 1f)
 
-	fun bounds(screenW: Float, screenH: Float, cfg: ModConfig = ModConfig.get()): Bounds {
+	fun bounds(
+		screenW: Float,
+		screenH: Float,
+		cfg: ModConfig = ModConfig.get(),
+		lyricsExpand: Float = OverlayRenderer.lyricsPanelExpand(),
+	): Bounds {
 		val scale = cfg.overlayScale.coerceIn(MIN_SCALE, MAX_SCALE)
 		val ow = BASE_W * scale
-		val oh = baseHeight(cfg.showLyrics) * scale
+		val oh = baseHeight(lyricsExpand) * scale
 		var px = if (cfg.overlayX >= 0f) cfg.overlayX else screenW + cfg.overlayX - ow
 		var py = if (cfg.overlayY >= 0f) cfg.overlayY else screenH + cfg.overlayY - oh
 		px = px.coerceIn(0f, (screenW - ow).coerceAtLeast(0f))

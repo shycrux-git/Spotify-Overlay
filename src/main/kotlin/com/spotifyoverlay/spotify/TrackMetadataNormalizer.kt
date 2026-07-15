@@ -1,6 +1,5 @@
 package com.spotifyoverlay.spotify
 
-/** Normalizes SMTC-style multi-artist strings and featured title suffixes. */
 object TrackMetadataNormalizer {
 	private val artistSplit =
 		Regex("""\s*(?:,|;|/|&|\band\b|\bfeat\.?\b|\bft\.?\b|\bfeaturing\b|\bwith\b)\s+""", RegexOption.IGNORE_CASE)

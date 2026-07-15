@@ -4,9 +4,7 @@
 	"version": "${version}",
 	"name": "Spotify Overlay",
 	"description": "Skija in-game Spotify overlay using Windows SMTC, with album art, progress, and synced lyrics. Works with OpenGL and Vulkan.",
-	"authors": [
-		"Me!"
-	],
+	"authors": ["shycrux"],
 	"license": "CC0-1.0",
 	"environment": "client",
 	"accessWidener": "spotify-overlay.accesswidener",

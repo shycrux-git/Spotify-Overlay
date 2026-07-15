@@ -18,7 +18,6 @@ import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.Executors
 import kotlin.math.abs
 
-/** Resolves fuller artist credits and artwork from iTunes / Deezer. */
 object TrackMetadataEnricher {
 	data class Enrichment(
 		val artists: String,

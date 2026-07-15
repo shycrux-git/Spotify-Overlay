@@ -2,19 +2,22 @@ package com.spotifyoverlay.client
 
 import com.spotifyoverlay.config.ModConfig
 import com.spotifyoverlay.render.OverlayLayout
+import com.spotifyoverlay.render.OverlayRenderer
 import net.minecraft.client.Minecraft
 import net.minecraft.client.input.MouseButtonEvent
 import org.lwjgl.glfw.GLFW
 
-/** Chat-screen drag and scroll for moving / scaling the overlay. */
 object OverlayInteraction {
 	@Volatile
 	private var dragging = false
 	private var grabOffsetX = 0.0
 	private var grabOffsetY = 0.0
 
+	fun isDragging(): Boolean = dragging
+
 	fun onMouseClicked(event: MouseButtonEvent): Boolean {
 		if (!ModConfig.get().overlayEnabled) return false
+		if (!OverlayRenderer.isInteractable()) return false
 		if (event.button() != GLFW.GLFW_MOUSE_BUTTON_LEFT) return false
 
 		val bounds = currentBounds() ?: return false
@@ -48,6 +51,7 @@ object OverlayInteraction {
 
 	fun onMouseScrolled(mouseX: Double, mouseY: Double, vertical: Double): Boolean {
 		if (!ModConfig.get().overlayEnabled) return false
+		if (!OverlayRenderer.isInteractable()) return false
 		if (vertical == 0.0) return false
 
 		val client = Minecraft.getInstance()
@@ -64,8 +68,9 @@ object OverlayInteraction {
 
 		val cx = bounds.x + bounds.w * 0.5f
 		val cy = bounds.y + bounds.h * 0.5f
+		val expand = OverlayRenderer.lyricsPanelExpand()
 		val nw = OverlayLayout.BASE_W * newScale
-		val nh = OverlayLayout.baseHeight(cfg.showLyrics) * newScale
+		val nh = OverlayLayout.baseHeight(expand) * newScale
 		val nx = (cx - nw * 0.5f).coerceIn(0f, (sw - nw).coerceAtLeast(0f))
 		val ny = (cy - nh * 0.5f).coerceIn(0f, (sh - nh).coerceAtLeast(0f))
 
@@ -83,8 +88,9 @@ object OverlayInteraction {
 		val sh = client.window.guiScaledHeight.toFloat()
 		val cfg = ModConfig.get()
 		val scale = cfg.overlayScale.coerceIn(OverlayLayout.MIN_SCALE, OverlayLayout.MAX_SCALE)
+		val expand = OverlayRenderer.lyricsPanelExpand()
 		val ow = OverlayLayout.BASE_W * scale
-		val oh = OverlayLayout.baseHeight(cfg.showLyrics) * scale
+		val oh = OverlayLayout.baseHeight(expand) * scale
 
 		cfg.overlayX = (mouseX - grabOffsetX).toFloat().coerceIn(0f, (sw - ow).coerceAtLeast(0f))
 		cfg.overlayY = (mouseY - grabOffsetY).toFloat().coerceIn(0f, (sh - oh).coerceAtLeast(0f))
